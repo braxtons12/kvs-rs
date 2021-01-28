@@ -1,0 +1,48 @@
+[package]
+name = "kvs"
+version = "0.1.0"
+authors = ["braxtons12 <braxtonsalyer@gmail.com>"]
+edition = "2018"
+description = "A Key-Value Store"
+license = "GPLv2"
+categories = ["command-line-utilities, key-value-store"]
+keywords = ["key-value-store", "command-line", "cli"]
+readme = "README.md"
+repository = "https://github.com/braxtons12"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[features]
+default = []
+
+[dependencies]
+anyhow = "^1.0.38"
+clap = "^2.33.3"
+chrono = { version = "^0.4.19", features = ["serde"] }
+dirs = "^3.0.1"
+structopt = { version = "^0.3.21", features = ["color", "wrap_help", "suggestions", "doc"] }
+thiserror = "^1.0.23"
+serde = { version = "^1.0.117", features = ["derive"] }
+serde_json = "^1.0.59"
+lazy_static = "^1.4.0"
+slog = "^2.7.0"
+slog-async = "^2.6.0"
+slog-json = "^2.3.0"
+slog-scope = "^4.4.0"
+slog-term = "^2.6.0"
+slog-stdlog = "^4.1.0"
+
+[dev-dependencies]
+assert_cmd = "^1.0.2"
+predicates = "^1.0.6"
+tempfile = "^3.0.7"
+walkdir = "^2.2.7"
+
+[lib]
+test = false
+doctest = false
+
+[[bin]]
+name = "kvs"
+test = false
+doctest = false
