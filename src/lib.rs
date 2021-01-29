@@ -173,14 +173,17 @@ impl Index {
 
 		// open the file
 		let file = OpenOptions::new().create(true).append(true).open(path)?;
-		let mut writer = BufWriter::new(file);
+		let mut writer =
+			BufWriter::with_capacity(FILE_SIZE_ENTRIES * std::mem::size_of::<Commands>(), file);
 		let command = Commands::Set {
 			key: key.clone(),
 			value,
 		};
 		// write to the database file
 		writer.write_all(to_string(&command)?.as_bytes())?;
+		writer.flush()?;
 		trace!("KV pair written to DB file {}", self.current_file_id);
+
 		// if the index already contained this key, update the entry in the index
 		if let ContainedLocation::Contained {
 			file_id: _,
@@ -282,7 +285,7 @@ impl Index {
 				key.clone(),
 				file_id
 			);
-			info!(
+			trace!(
 				"Found entry for key: {} in index. file_id: {}, file_index: {}",
 				key.clone(),
 				file_id,
@@ -294,22 +297,19 @@ impl Index {
 
 			// open the file
 			let file = OpenOptions::new().read(true).open(path)?;
-			let reader = BufReader::new(file);
-			let entries: Vec<std::result::Result<Commands, serde_json::Error>> =
-				Deserializer::from_reader(reader).into_iter().collect();
+			let reader =
+				BufReader::with_capacity(FILE_SIZE_ENTRIES * std::mem::size_of::<Commands>(), file);
+			let entries: Vec<Commands> = Deserializer::from_reader(reader)
+				.into_iter()
+				.collect::<std::result::Result<Vec<Commands>, serde_json::Error>>(
+			)?;
 
-			info!("read entries from disk. entries length: {}", entries.len());
-			match entries[file_index].as_ref() {
-				Ok(entry) => {
-					trace!("Found entry in DB file {}, checking for validity", file_id);
-					match entry {
-						// return the value if it is
-						Commands::Set { key: _, value } => Ok(Some(value.clone())),
-						// otherwise, the data is corrupted
-						_ => Err(KvStoreError::new_db_data_corruption()),
-					}
-				}
-				Err(_) => Err(KvStoreError::new_db_data_corruption()),
+			trace!("read entries from disk. entries length: {}", entries.len());
+			match &entries[file_index] {
+				// return the value if it is
+				Commands::Set { key: _, value } => Ok(Some(value.clone())),
+				// otherwise, the data is corrupted
+				_ => Err(KvStoreError::new_db_data_corruption()),
 			}
 		}
 		// otherwise, return that it's not present in the database
@@ -503,7 +503,9 @@ impl Index {
 				}
 			}
 		}
-		info!("Rebuild complete: Index length: {}", self.entries.len());
+		trace!("Rebuild complete: Index length: {}", self.entries.len());
+		//let last = self.get("key999".to_owned())?;
+		//trace!("Last entry value: {}", last.unwrap());
 
 		Ok(())
 	}
@@ -516,8 +518,10 @@ impl Index {
 	fn rebuild_from_file(&mut self, path: PathBuf) -> Result<()> {
 		if let Ok(file) = OpenOptions::new().read(true).open(path) {
 			let reader = BufReader::new(file);
-			let entries: Vec<std::result::Result<Commands, serde_json::Error>> =
-				Deserializer::from_reader(reader).into_iter().collect();
+			let entries: Vec<Commands> = Deserializer::from_reader(reader)
+				.into_iter()
+				.collect::<std::result::Result<Vec<Commands>, serde_json::Error>>(
+			)?;
 
 			trace!(
 				"Splitting file entries at current_file_index={}",
@@ -525,21 +529,16 @@ impl Index {
 			);
 			let (_, subset) = entries.split_at(self.current_file_index);
 			for entry in subset {
-				if let Ok(entry) = entry {
-					trace!("Read entry from disk: {:#?}", entry);
-					match entry {
-						Commands::Set { key, value: _ } => {
-							trace!("Adding set command to index for key: {}", key.clone());
-							self.set_in_index(key.clone());
-						}
-						Commands::Rm { key } => {
-							trace!("Adding rm command to index for key: {}", key.clone());
-							self.rm_from_index(key.clone());
-						}
-						_ => return Err(KvStoreError::new_db_data_corruption()),
+				match entry {
+					Commands::Set { key, value: _ } => {
+						trace!("Adding set command to index for key: {}", key.clone());
+						self.set_in_index(key.clone());
 					}
-				} else {
-					return Err(KvStoreError::new_db_data_corruption());
+					Commands::Rm { key } => {
+						trace!("Adding rm command to index for key: {}", key.clone());
+						self.rm_from_index(key.clone());
+					}
+					_ => return Err(KvStoreError::new_db_data_corruption()),
 				}
 			}
 		}
@@ -551,7 +550,7 @@ impl Index {
 	/// # Errors
 	/// Returns an error if a file I/O, serialization, or deserialization error occurs
 	pub fn compact(&mut self) -> Result<()> {
-		info!("Compacting Database");
+		trace!("Compacting Database");
 		let mut file_id = 0_usize;
 
 		let mut path = self.root_path.clone();
@@ -565,7 +564,8 @@ impl Index {
 		for i in 0..self.entries.len() {
 			let key = self.entries[i].key.clone();
 			let value = self.get(key.clone())?.unwrap();
-			info!(
+
+			trace!(
 				"Writing entry {}: key: {}, value: {} to DB swap file {}",
 				i,
 				key.clone(),
@@ -579,12 +579,12 @@ impl Index {
 
 			writer.write_all(to_string(&command)?.as_bytes())?;
 
-			info!("writing entry for key: {} to swap index", key.clone());
+			trace!("writing entry for key: {} to swap index", key.clone());
 			temp_index.set_in_index(key);
 
 			if temp_index.current_file_id != file_id {
 				file_id = temp_index.current_file_id;
-				info!("Incrementing to next DB file: {}", file_id);
+				trace!("Incrementing to next DB file: {}", file_id);
 				path = self.root_path.clone();
 				path.push(file_id.to_string() + SWAP_FILE_POSTFIX.as_str());
 				path = path.with_extension(FILE_EXT.to_string());
@@ -594,7 +594,7 @@ impl Index {
 		}
 
 		for i in 0..=file_id {
-			info!("Renaming DB swap file {} to active DB file", i);
+			trace!("Renaming DB swap file {} to active DB file", i);
 			path = self.root_path.clone();
 			path.push(i.to_string());
 			path = path.with_extension(FILE_EXT.to_string());
@@ -607,23 +607,26 @@ impl Index {
 		}
 
 		let entries = std::fs::read_dir(self.root_path.clone())?;
-		let mut removal_id = file_id + 1;
-		info!("Removing unnessary DB files: {} and greater", removal_id);
-		for entry in entries {
-			let entry = entry?;
-			let path = entry.path();
-			let mut removal_path = self.root_path.clone();
-			removal_path.push(removal_id.to_string());
-			removal_path = removal_path.with_extension(FILE_EXT.to_string());
+		let size = entries.count();
+		let removal_id = file_id + 1;
+		trace!("Removing unnessary DB files: {} and greater", removal_id);
+		for i in removal_id..size + removal_id {
+			let entries = std::fs::read_dir(self.root_path.clone())?;
+			for entry in entries {
+				let entry = entry?;
+				let path = entry.path();
+				let mut removal_path = self.root_path.clone();
+				removal_path.push(i.to_string());
+				removal_path = removal_path.with_extension(FILE_EXT.to_string());
 
-			if path == removal_path {
-				info!("Removing unnessary DB file {}", removal_id);
-				std::fs::remove_file(path)?;
-				removal_id += 1;
+				if path == removal_path {
+					trace!("Removing unnessary DB file {}", i);
+					std::fs::remove_file(path)?;
+				}
 			}
 		}
 
-		info!("Updating active index to match compacted index");
+		trace!("Updating active index to match compacted index");
 		self.current_file_index = temp_index.current_file_index;
 		self.current_file_id = temp_index.current_file_id;
 		self.entries = temp_index.entries;

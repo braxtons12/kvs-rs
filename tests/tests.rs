@@ -2,7 +2,6 @@ use assert_cmd::prelude::*;
 use kvs::{KvStore, Result};
 use predicates::ord::eq;
 use predicates::str::{contains, is_empty, PredicateStrExt};
-use slog_scope::info;
 use std::process::Command;
 use tempfile::TempDir;
 use walkdir::WalkDir;
@@ -61,34 +60,6 @@ fn cli_set() {
 		.assert()
 		.success()
 		.stdout(is_empty());
-}
-
-#[test]
-fn cli_set_many_and_get_last() {
-	let temp_dir = TempDir::new().expect("unable to create temporary working directory");
-
-	//update 1024 to match `FILE_SIZE_ENTRIES`
-	for i in 0..=1024 {
-		Command::cargo_bin("kvs")
-			.unwrap()
-			.args(&[
-				"set",
-				format!("key{}", i).as_str(),
-				format!("val{}", i).as_str(),
-			])
-			.current_dir(&temp_dir)
-			.assert()
-			.stdout(is_empty());
-	}
-
-	//update 1024 to match `FILE_SIZE_ENTRIES`
-	Command::cargo_bin("kvs")
-		.unwrap()
-		.args(&["get", format!("key{}", 1024).as_str()])
-		.current_dir(&temp_dir)
-		.assert()
-		.success()
-		.stdout(eq(format!("val{}", 1024).as_str()).trim());
 }
 
 #[test]
@@ -289,19 +260,11 @@ fn remove_key() -> Result<()> {
 // Test data correctness after compaction.
 #[test]
 fn compaction() -> Result<()> {
-	let _logger = kvs::setup_loggers();
-	let mut temp_dir = dirs::cache_dir().unwrap();
-	temp_dir.push("kvs-test");
-
-	//switch the `temp_dir` logic back to this for actual testing. Using the current code just to
-	//be able to open the files manually and inspect their contents
-	//let temp_dir = TempDir::new().expect("unable to create temporary working directory");
-	std::fs::create_dir_all(temp_dir.clone())?;
-	info!("Temp Dir Directory is: {:#?}", temp_dir.clone());
-	let mut store = KvStore::open(temp_dir.clone())?;
+	let temp_dir = TempDir::new().expect("unable to create temporary working directory");
+	let mut store = KvStore::open(temp_dir.path())?;
 
 	let dir_size = || {
-		let entries = WalkDir::new(temp_dir.clone()).into_iter();
+		let entries = WalkDir::new(temp_dir.path()).into_iter();
 		let len: walkdir::Result<u64> = entries
 			.map(|res| {
 				res.and_then(|entry| entry.metadata())
@@ -328,7 +291,7 @@ fn compaction() -> Result<()> {
 
 		drop(store);
 		// reopen and check content.
-		let mut store = KvStore::open(temp_dir.clone())?;
+		let mut store = KvStore::open(temp_dir.path())?;
 		for key_id in 0..1000 {
 			let key = format!("key{}", key_id);
 			assert_eq!(store.get(key)?, Some(format!("{}", iter)));
