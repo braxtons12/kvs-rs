@@ -351,6 +351,8 @@ impl Index {
 			);
 			// write to the database file
 			writer.write_all(to_string(&command)?.as_bytes())?;
+			writer.flush()?;
+
 			// update the index
 			self.entries.remove(index_index);
 			self.current_file_index += 1;
