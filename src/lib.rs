@@ -46,6 +46,10 @@ lazy_static! {
 	static ref SWAP_FILE_POSTFIX: String = "_swap".to_owned();
 }
 
+lazy_static! {
+	static ref INDEX_FILE_NAME: String = "index".to_owned();
+}
+
 /// Creates the `slog::Logger` for the library/application
 #[must_use]
 pub fn setup_loggers() -> Logger {
@@ -109,6 +113,17 @@ pub enum ContainedLocation {
 		/// The in-memory index index for the key
 		index_index: usize,
 	},
+}
+
+/// `KvStore` index storing an on-disk cache of the in-memory index
+#[derive(Default, Debug, Serialize, Deserialize)]
+pub struct IndexDiskCache {
+	/// The index of Key-Value pair entries in the database
+	entries: Vec<IndexEntry>,
+	/// The current file to write updates to
+	current_file_id: usize,
+	/// The current index to write updates at
+	current_file_index: usize,
 }
 
 /// `KvStore` Index storing an in-memory representation of the database state
@@ -429,21 +444,23 @@ impl Index {
 		trace!("Opening DB at path: {:#?}", path.clone());
 		// build the path to the index cache
 		let mut index_path = path.clone();
-		index_path.push("index".to_owned());
+		index_path.push(INDEX_FILE_NAME.to_string());
 		index_path = index_path.with_extension(FILE_EXT.to_string());
 
 		// if the index cache exists, read it from disk.
 		// Then, check disk contents and rebuild the remaining index if necessary
-		//
-		// TODO: impl `Drop` such that the index cache is written to disk on drop
 		if let Ok(index_file) = OpenOptions::new().read(true).open(index_path) {
 			trace!("Found index cache file. Updating Index from it");
-			let mut reader = BufReader::new(index_file);
+			let mut reader = BufReader::with_capacity(
+				FILE_SIZE_ENTRIES * std::mem::size_of::<Commands>(),
+				index_file,
+			);
 			let mut buffer =
 				Vec::with_capacity(FILE_SIZE_ENTRIES * std::mem::size_of::<Commands>());
 			reader.read_to_end(&mut buffer)?;
 
-			let index = serde_json::from_str::<Index>(std::str::from_utf8(buffer.as_slice())?)?;
+			let index =
+				serde_json::from_str::<IndexDiskCache>(std::str::from_utf8(buffer.as_slice())?)?;
 			self.entries = index.entries;
 			self.current_file_id = index.current_file_id;
 			self.current_file_index = index.current_file_index;
@@ -631,9 +648,50 @@ impl Index {
 		trace!("Updating active index to match compacted index");
 		self.current_file_index = temp_index.current_file_index;
 		self.current_file_id = temp_index.current_file_id;
-		self.entries = temp_index.entries;
+		self.entries = temp_index.entries.clone();
 
 		Ok(())
+	}
+
+	/// Performs the shutdown sequence for the database.
+	/// At present, this only writes the index cache to disk
+	///
+	/// # Errors
+	/// Returns an error if an I/O or serialization error occurs
+	pub fn flush_cache(&self) -> Result<()> {
+		trace!("Flushing index cache to disk");
+		let mut path = self.root_path.clone();
+		path.push(INDEX_FILE_NAME.to_string());
+		path = path.with_extension(FILE_EXT.to_string());
+
+		let file = OpenOptions::new()
+			.create(true)
+			.truncate(true)
+			.write(true)
+			.open(path)?;
+		trace!("Opened index cache file");
+
+		let mut writer =
+			BufWriter::with_capacity(FILE_SIZE_ENTRIES * std::mem::size_of::<Commands>(), file);
+
+		let disk_cache = IndexDiskCache {
+			entries: self.entries.clone(),
+			current_file_id: self.current_file_id,
+			current_file_index: self.current_file_index,
+		};
+
+		trace!("Writing index cache to disk");
+		writer.write_all(to_string::<IndexDiskCache>(&disk_cache)?.as_bytes())?;
+		writer.flush()?;
+		trace!("Index cache successfully written to disk!");
+		Ok(())
+	}
+}
+
+impl Drop for Index {
+	fn drop(&mut self) {
+		self.flush_cache()
+			.expect("Failed to write index cache to disk");
 	}
 }
 
